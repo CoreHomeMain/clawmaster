@@ -8,65 +8,95 @@
   let paypalLoaded = false
   let processing = false
   let paypalError = ''
-  let paypalContainerEl: HTMLDivElement
+  let paypalContainerEl: HTMLDivElement | null = null
 
   onMount(async () => {
-    // Load PayPal JS SDK
-    await new Promise<void>((resolve, reject) => {
-      const script = document.createElement('script')
-      script.src = `https://www.paypal.com/sdk/js?client-id=${PAYPAL_CLIENT_ID}&currency=USD`
-      script.onload = () => resolve()
-      script.onerror = () => reject(new Error('Failed to load PayPal SDK'))
-      document.head.appendChild(script)
-    })
+    try {
+      // Load PayPal JS SDK
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = `https://www.paypal.com/sdk/js?client-id=${PAYPAL_CLIENT_ID}&currency=USD`
+        script.onload = () => resolve()
+        script.onerror = () => reject(new Error('Failed to load PayPal SDK'))
+        document.head.appendChild(script)
+      })
 
-    paypalLoaded = true
+      // @ts-ignore
+      if (!window.paypal) {
+        throw new Error('PayPal SDK loaded but window.paypal is undefined')
+      }
 
-    // @ts-ignore
-    window.paypal.Buttons({
-      style: {
-        layout: 'vertical',
-        color: 'gold',
-        shape: 'rect',
-        label: 'pay'
-      },
+      // @ts-ignore
+      window.paypal.Buttons({
+        style: {
+          layout: 'vertical',
+          color: 'gold',
+          shape: 'rect',
+          label: 'pay'
+        },
 
-      async createOrder() {
-        const res = await fetch('/api/payments/create-order', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        })
-        const order = await res.json()
-        return order.id
-      },
+        async createOrder() {
+          try {
+            const res = await fetch('/api/payments/create-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            })
+            const order = await res.json()
+            if (!order.id) {
+              throw new Error('No order ID returned from server')
+            }
+            return order.id
+          } catch (err) {
+            console.error('Create order error:', err)
+            paypalError = 'Failed to create order. Please refresh and try again.'
+            throw err
+          }
+        },
 
-      async onApprove(data: { orderID: string }) {
-        processing = true
-        try {
-          const res = await fetch('/api/payments/capture-order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ orderId: data.orderID })
-          })
-          const result = await res.json()
-          if (result.success) {
-            window.location.href = '/dashboard?payment=success'
-          } else {
-            paypalError = 'Payment could not be completed. Please contact support.'
+        async onApprove(data: { orderID: string }) {
+          processing = true
+          paypalError = ''
+          try {
+            const res = await fetch('/api/payments/capture-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId: data.orderID })
+            })
+            const result = await res.json()
+            if (result.success) {
+              window.location.href = '/dashboard?payment=success'
+            } else {
+              paypalError = result.error || 'Payment could not be completed. Please contact support.'
+              processing = false
+            }
+          } catch (e) {
+            console.error('Capture error:', e)
+            paypalError = 'Payment error. Please try again or contact support.'
             processing = false
           }
-        } catch (e) {
-          paypalError = 'Payment error. Please try again.'
+        },
+
+        onError(err: Error) {
+          console.error('PayPal error:', err)
+          paypalError = 'PayPal error: ' + err.message
+          processing = false
+        },
+
+        onCancel() {
+          paypalError = 'Payment cancelled. You can try again anytime.'
           processing = false
         }
-      },
+      // @ts-ignore
+      }).render(paypalContainerEl)
 
-      onError(err: Error) {
-        paypalError = 'PayPal error: ' + err.message
-        processing = false
-      }
-    // @ts-ignore
-    }).render(paypalContainerEl)
+      // Only mark as loaded if buttons successfully rendered
+      paypalLoaded = true
+
+    } catch (err) {
+      console.error('PayPal setup error:', err)
+      paypalError = err instanceof Error ? err.message : 'Failed to initialize PayPal'
+      paypalLoaded = false
+    }
   })
 </script>
 
@@ -120,6 +150,12 @@
       {#if paypalError}
         <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
           {paypalError}
+          <button 
+            on:click={() => { paypalError = ''; paypalLoaded = false; onMount() }}
+            class="ml-2 underline hover:text-red-300"
+          >
+            Retry
+          </button>
         </div>
       {/if}
 
@@ -135,7 +171,7 @@
         </div>
       {/if}
 
-      <div bind:this={paypalContainerEl} class:hidden={processing}></div>
+      <div bind:this={paypalContainerEl} class:hidden={processing || !paypalLoaded}></div>
 
       <p class="mt-4 text-center text-xs text-slate-500">
         🔒 Secured by PayPal · 30-day money-back guarantee

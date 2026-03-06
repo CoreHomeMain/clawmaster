@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
+import { checkAndAwardAchievements } from '$lib/server/achievements'
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   const { session, user } = await locals.safeGetSession()
@@ -27,7 +28,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     throw error(500, 'Failed to save progress')
   }
 
-  // If completed, award XP to user
+  let awarded: any[] = []
+
+  // If completed, award XP to user and check achievements
   if (status === 'completed') {
     const { data: moduleData } = await locals.supabase
       .from('modules')
@@ -49,7 +52,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           .eq('id', user.id)
       }
     }
+
+    // Check for module completion achievements
+    const { data: completedProgress } = await locals.supabase
+      .from('user_progress')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('status', 'completed')
+
+    const completedCount = completedProgress?.length || 1
+    awarded = await checkAndAwardAchievements(locals.supabase, user.id, 'module_complete', completedCount)
   }
 
-  return json({ success: true })
+  return json({ success: true, awarded })
 }

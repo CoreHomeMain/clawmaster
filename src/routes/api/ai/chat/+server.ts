@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { createClient } from '@supabase/supabase-js'
+import { checkAndAwardAchievements } from '$lib/server/achievements'
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY!
 const MODEL = 'minimax/minimax-m2.5'
@@ -87,7 +88,30 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   if (!response.ok) {
     const errText = await response.text()
     console.error('OpenRouter error:', errText)
-    throw error(500, 'AI service error')
+    
+    // Parse OpenRouter error for better message
+    let errorMsg = 'AI service error'
+    try {
+      const errData = JSON.parse(errText)
+      if (errData.error?.message) {
+        errorMsg = errData.error.message
+      } else if (errData.message) {
+        errorMsg = errData.message
+      }
+    } catch {}
+    
+    // Handle specific status codes
+    if (response.status === 401) {
+      errorMsg = 'Invalid OpenRouter API key. Please check your key or use your own.'
+    } else if (response.status === 402) {
+      errorMsg = 'Insufficient funds in OpenRouter account. Please top up or use your own key.'
+    } else if (response.status === 429) {
+      errorMsg = 'OpenRouter rate limit reached. Please wait a moment and try again.'
+    } else if (response.status === 503) {
+      errorMsg = 'OpenRouter service temporarily unavailable. Please try again later.'
+    }
+    
+    throw error(response.status === 401 || response.status === 402 ? response.status : 500, errorMsg)
   }
 
   // Stream the response back
@@ -153,6 +177,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 credits_used: creditsUsed
               }
             ])
+
+            // Check for ClawBot message achievements
+            const { data: messageCount } = await locals.supabase
+              .from('messages')
+              .select('id')
+              .eq('role', 'user')
+              .in('conversation_id', [
+                conversationId
+              ])
+
+            if (messageCount) {
+              await checkAndAwardAchievements(
+                locals.supabase,
+                user.id,
+                'clawbot_messages',
+                messageCount.length
+              )
+            }
           }
         }
       } catch (e) {
