@@ -11,23 +11,44 @@
   let paypalContainerEl: HTMLDivElement | null = null
 
   onMount(async () => {
+    console.log('[PayPal] Starting PayPal setup...')
+    
     try {
       // Load PayPal JS SDK
       await new Promise<void>((resolve, reject) => {
+        const existingScript = document.querySelector('script[src*="paypal.com/sdk"]')
+        if (existingScript) {
+          console.log('[PayPal] SDK already loaded')
+          resolve()
+          return
+        }
+        
         const script = document.createElement('script')
-        script.src = `https://www.paypal.com/sdk/js?client-id=${PAYPAL_CLIENT_ID}&currency=USD`
-        script.onload = () => resolve()
-        script.onerror = () => reject(new Error('Failed to load PayPal SDK'))
+        script.src = `https://www.paypal.com/sdk/js?client-id=${PAYPAL_CLIENT_ID}&currency=USD&enable-funding=paylater`
+        script.onload = () => {
+          console.log('[PayPal] SDK script loaded')
+          resolve()
+        }
+        script.onerror = (e) => {
+          console.error('[PayPal] SDK script error:', e)
+          reject(new Error('Failed to load PayPal SDK'))
+        }
         document.head.appendChild(script)
       })
 
-      // @ts-ignore
-      if (!window.paypal) {
-        throw new Error('PayPal SDK loaded but window.paypal is undefined')
-      }
+      // Wait a bit for PayPal to initialize
+      await new Promise(r => setTimeout(r, 500))
 
       // @ts-ignore
-      window.paypal.Buttons({
+      if (!window.paypal || !window.paypal.Buttons) {
+        console.error('[PayPal] window.paypal.Buttons not available:', window.paypal)
+        throw new Error('PayPal SDK loaded but buttons not available')
+      }
+
+      console.log('[PayPal] Rendering buttons...')
+
+      // @ts-ignore
+      const buttons = window.paypal.Buttons({
         style: {
           layout: 'vertical',
           color: 'gold',
@@ -36,24 +57,27 @@
         },
 
         async createOrder() {
+          console.log('[PayPal] Creating order...')
           try {
             const res = await fetch('/api/payments/create-order', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' }
             })
             const order = await res.json()
+            console.log('[PayPal] Order response:', order)
             if (!order.id) {
               throw new Error('No order ID returned from server')
             }
             return order.id
           } catch (err) {
-            console.error('Create order error:', err)
+            console.error('[PayPal] Create order error:', err)
             paypalError = 'Failed to create order. Please refresh and try again.'
             throw err
           }
         },
 
         async onApprove(data: { orderID: string }) {
+          console.log('[PayPal] Order approved:', data)
           processing = true
           paypalError = ''
           try {
@@ -63,6 +87,7 @@
               body: JSON.stringify({ orderId: data.orderID })
             })
             const result = await res.json()
+            console.log('[PayPal] Capture result:', result)
             if (result.success) {
               window.location.href = '/dashboard?payment=success'
             } else {
@@ -70,30 +95,36 @@
               processing = false
             }
           } catch (e) {
-            console.error('Capture error:', e)
+            console.error('[PayPal] Capture error:', e)
             paypalError = 'Payment error. Please try again or contact support.'
             processing = false
           }
         },
 
         onError(err: Error) {
-          console.error('PayPal error:', err)
+          console.error('[PayPal] Button error:', err)
           paypalError = 'PayPal error: ' + err.message
           processing = false
         },
 
         onCancel() {
+          console.log('[PayPal] Payment cancelled')
           paypalError = 'Payment cancelled. You can try again anytime.'
           processing = false
         }
-      // @ts-ignore
-      }).render(paypalContainerEl)
+      })
 
-      // Only mark as loaded if buttons successfully rendered
+      // Check if container exists before rendering
+      if (!paypalContainerEl) {
+        throw new Error('PayPal container element not found in DOM')
+      }
+
+      buttons.render(paypalContainerEl)
+      console.log('[PayPal] Buttons rendered successfully')
       paypalLoaded = true
 
     } catch (err) {
-      console.error('PayPal setup error:', err)
+      console.error('[PayPal] Setup error:', err)
       paypalError = err instanceof Error ? err.message : 'Failed to initialize PayPal'
       paypalLoaded = false
     }
@@ -171,7 +202,8 @@
         </div>
       {/if}
 
-      <div bind:this={paypalContainerEl} class:hidden={processing || !paypalLoaded}></div>
+      <!-- Always visible container for PayPal to render into -->
+      <div bind:this={paypalContainerEl} id="paypal-button-container" class="min-h-[150px]"></div>
 
       <p class="mt-4 text-center text-xs text-slate-500">
         🔒 Secured by PayPal · 30-day money-back guarantee
